@@ -1,150 +1,126 @@
-// Load Wi-Fi library
 #include <WiFi.h>
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
 
-// Replace with your network credentials
+// Substitua com suas credenciais de rede
 const char* ssid = "Teste";
 const char* password = "teste123";
 
-// Set web server port number to 80
-WiFiServer server(80);
-
-// Variable to store the HTTP request
-String header;
-
-// Auxiliar variables to store the current output state
-String output26State = "off";
-String output27State = "off";
-
-// Assign output variables to GPIO pins
+// Definição dos pinos de saída
 const int output26 = 26;
 const int output27 = 27;
 
-// Current time
-unsigned long currentTime = millis();
-// Previous time
-unsigned long previousTime = 0; 
-// Define timeout time in milliseconds (example: 2000ms = 2s)
-const long timeoutTime = 2000;
+// Estado dos pinos de saída
+String output26State = "off";
+String output27State = "off";
+
+// Instancia o servidor na porta 80
+AsyncWebServer server(80);
+
+// Página HTML em PROGMEM
+const char index_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ESP32 Web Server</title>
+    <style>
+      html { font-family: Helvetica; display: inline-block; text-align: center; }
+      .button { background-color: #4CAF50; border: none; color: white; padding: 16px 40px; text-decoration: none; font-size: 30px; cursor: pointer; }
+      .button2 { background-color: #555555; }
+    </style>
+    <script>
+      function toggleGPIO(gpio, state) {
+        var xhr = new XMLHttpRequest();
+        xhr.open("GET", "/" + gpio + "/" + state, true);
+        xhr.send();
+      }
+
+      function updateButtons() {
+        fetch("/states")
+          .then(response => response.json())
+          .then(data => {
+            document.getElementById("gpio26").innerHTML = data.output26State === "on" ? 
+              '<button class="button button2" onclick="toggleGPIO(26, \'off\')">OFF</button>' : 
+              '<button class="button" onclick="toggleGPIO(26, \'on\')">ON</button>';
+            
+            document.getElementById("gpio27").innerHTML = data.output27State === "on" ? 
+              '<button class="button button2" onclick="toggleGPIO(27, \'off\')">OFF</button>' : 
+              '<button class="button" onclick="toggleGPIO(27, \'on\')">ON</button>';
+          });
+      }
+
+      setInterval(updateButtons, 1000); // Atualiza os botões a cada 1 segundo
+    </script>
+  </head>
+  <body>
+    <h1>ESP32 Web Server</h1>
+    <p>GPIO 26 - State: <span id="gpio26"></span></p>
+    <p>GPIO 27 - State: <span id="gpio27"></span></p>
+  </body>
+</html>
+)rawliteral";
 
 void setup() {
   Serial.begin(115200);
-  // Initialize the output variables as outputs
+
+  // Configura os pinos de saída
   pinMode(output26, OUTPUT);
   pinMode(output27, OUTPUT);
-  // Set outputs to LOW
   digitalWrite(output26, LOW);
   digitalWrite(output27, LOW);
 
-  // Connect to Wi-Fi network with SSID and password
-  Serial.print("Connecting to ");
-  Serial.println(ssid);
+  // Conecta ao Wi-Fi
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
-  // Print local IP address and start web server
-  Serial.println("");
-  Serial.println("WiFi connected.");
-  Serial.println("IP address: ");
+  Serial.println("\nWiFi conectado.");
+  Serial.println("Endereço IP: ");
   Serial.println(WiFi.localIP());
+
+  // Define rota para controlar o GPIO 26
+  server.on("/26/on", HTTP_GET, [](AsyncWebServerRequest *request){
+    digitalWrite(output26, HIGH);
+    output26State = "on";
+    request->send(200, "text/plain", "GPIO 26 ON");
+  });
+
+  server.on("/26/off", HTTP_GET, [](AsyncWebServerRequest *request){
+    digitalWrite(output26, LOW);
+    output26State = "off";
+    request->send(200, "text/plain", "GPIO 26 OFF");
+  });
+
+  // Define rota para controlar o GPIO 27
+  server.on("/27/on", HTTP_GET, [](AsyncWebServerRequest *request){
+    digitalWrite(output27, HIGH);
+    output27State = "on";
+    request->send(200, "text/plain", "GPIO 27 ON");
+  });
+
+  server.on("/27/off", HTTP_GET, [](AsyncWebServerRequest *request){
+    digitalWrite(output27, LOW);
+    output27State = "off";
+    request->send(200, "text/plain", "GPIO 27 OFF");
+  });
+
+  // Rota para enviar o estado dos GPIOs como JSON
+  server.on("/states", HTTP_GET, [](AsyncWebServerRequest *request){
+    String json = "{\"output26State\":\"" + output26State + "\",\"output27State\":\"" + output27State + "\"}";
+    request->send(200, "application/json", json);
+  });
+
+  // Página principal com o estado dos GPIOs
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send_P(200, "text/html", index_html);
+  });
+
+  // Inicia o servidor
   server.begin();
 }
 
-void loop(){
-  WiFiClient client = server.available();   // Listen for incoming clients
-
-  if (client) {                             // If a new client connects,
-    currentTime = millis();
-    previousTime = currentTime;
-    Serial.println("New Client.");          // print a message out in the serial port
-    String currentLine = "";                // make a String to hold incoming data from the client
-    while (client.connected() && currentTime - previousTime <= timeoutTime) {  // loop while the client's connected
-      currentTime = millis();
-      if (client.available()) {             // if there's bytes to read from the client,
-        char c = client.read();             // read a byte, then
-        Serial.write(c);                    // print it out the serial monitor
-        header += c;
-        if (c == '\n') {                    // if the byte is a newline character
-          // if the current line is blank, you got two newline characters in a row.
-          // that's the end of the client HTTP request, so send a response:
-          if (currentLine.length() == 0) {
-            // HTTP headers always start with a response code (e.g. HTTP/1.1 200 OK)
-            // and a content-type so the client knows what's coming, then a blank line:
-            client.println("HTTP/1.1 200 OK");
-            client.println("Content-type:text/html");
-            client.println("Connection: close");
-            client.println();
-            
-            // turns the GPIOs on and off
-            if (header.indexOf("GET /26/on") >= 0) {
-              Serial.println("GPIO 26 on");
-              output26State = "on";
-              digitalWrite(output26, HIGH);
-            } else if (header.indexOf("GET /26/off") >= 0) {
-              Serial.println("GPIO 26 off");
-              output26State = "off";
-              digitalWrite(output26, LOW);
-            } else if (header.indexOf("GET /27/on") >= 0) {
-              Serial.println("GPIO 27 on");
-              output27State = "on";
-              digitalWrite(output27, HIGH);
-            } else if (header.indexOf("GET /27/off") >= 0) {
-              Serial.println("GPIO 27 off");
-              output27State = "off";
-              digitalWrite(output27, LOW);
-            }
-            
-            // Display the HTML web page
-            client.println("<!DOCTYPE html><html>");
-            client.println("<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
-            client.println("<link rel=\"icon\" href=\"data:,\">");
-            // CSS to style the on/off buttons 
-            // Feel free to change the background-color and font-size attributes to fit your preferences
-            client.println("<style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}");
-            client.println(".button { background-color: #4CAF50; border: none; color: white; padding: 16px 40px;");
-            client.println("text-decoration: none; font-size: 30px; margin: 2px; cursor: pointer;}");
-            client.println(".button2 {background-color: #555555;}</style></head>");
-            
-            // Web Page Heading
-            client.println("<body><h1>ESP32 Web Server</h1>");
-            
-            // Display current state, and ON/OFF buttons for GPIO 26  
-            client.println("<p>GPIO 26 - State " + output26State + "</p>");
-            // If the output26State is off, it displays the ON button       
-            if (output26State=="off") {
-              client.println("<p><a href=\"/26/on\"><button class=\"button\">ON</button></a></p>");
-            } else {
-              client.println("<p><a href=\"/26/off\"><button class=\"button button2\">OFF</button></a></p>");
-            } 
-               
-            // Display current state, and ON/OFF buttons for GPIO 27  
-            client.println("<p>GPIO 27 - State " + output27State + "</p>");
-            // If the output27State is off, it displays the ON button       
-            if (output27State=="off") {
-              client.println("<p><a href=\"/27/on\"><button class=\"button\">ON</button></a></p>");
-            } else {
-              client.println("<p><a href=\"/27/off\"><button class=\"button button2\">OFF</button></a></p>");
-            }
-            client.println("</body></html>");
-            
-            // The HTTP response ends with another blank line
-            client.println();
-            // Break out of the while loop
-            break;
-          } else { // if you got a newline, then clear currentLine
-            currentLine = "";
-          }
-        } else if (c != '\r') {  // if you got anything else but a carriage return character,
-          currentLine += c;      // add it to the end of the currentLine
-        }
-      }
-    }
-    // Clear the header variable
-    header = "";
-    // Close the connection
-    client.stop();
-    Serial.println("Client disconnected.");
-    Serial.println("");
-  }
+void loop() {
+  // Nada a fazer no loop
 }
